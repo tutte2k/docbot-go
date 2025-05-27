@@ -676,6 +676,8 @@ type EmbeddingServer struct {
 }
 
 func NewEmbeddingServer(modelPath string) (*EmbeddingServer, error) {
+
+	// TODO: FIXA DEN HÄR SKIT PATHEN
 	relPath := "./llama.cpp/build/bin/llama-embedding"
 
 	absPath, err := filepath.Abs(relPath)
@@ -782,6 +784,8 @@ func main() {
 		slog.Error("Failed to initialize collection", "tenant_id", tenantID, "error", err)
 		return
 	}
+
+	// TODO: SPARA HASH PÅ DOCS ANNAN COLLECTION FÖR TRACKING VAD SOM INGESTAT
 
 	// if err := chromaClient.IngestData(tenantID, dataPath, collectionName); err != nil {
 	// 	slog.Error("Failed to ingest data", "tenant_id", tenantID, "error", err)
