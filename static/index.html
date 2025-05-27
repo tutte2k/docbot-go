@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MDN DocBot</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <style>
+      .chroma {
+        background: #181825;
+        padding: 10px;
+        border-radius: 5px;
+        overflow-x: auto;
+      }
+      /* Add Chroma Monokai styles */
+      .chroma .k {
+        color: #ff79c6;
+      }
+      .chroma .nv {
+        color: #8be9fd;
+      }
+      .chroma .s {
+        color: #f1fa8c;
+      }
+      .chroma .p {
+        color: #f8f8f2;
+      }
+      /* Add more styles as needed */
+    </style>
+  </head>
+  <body>
+    <div class="chat-container">
+      <div class="chat-header">
+        <h1>MDN DocBot</h1>
+        <p>Ask about HTML, CSS, JavaScript, HTTP, or Web APIs!</p>
+      </div>
+      <div class="chat-history" id="chatHistory"></div>
+      <div class="chat-input">
+        <input
+          type="text"
+          id="queryInput"
+          placeholder="Enter your query (e.g., 'center a div')"
+          autofocus
+        />
+        <button onclick="sendQuery()">Send</button>
+      </div>
+    </div>
+    <script src="/static/script.js"></script>
+  </body>
+</html>

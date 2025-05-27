@@ -1,0 +1,28 @@
+version: "3.8"
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma-data:/data
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama-entrypoint.sh:/ollama-entrypoint.sh
+      - ollama-data:/root/.ollama
+    entrypoint: ["/ollama-entrypoint.sh"]
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  ollama-data:
