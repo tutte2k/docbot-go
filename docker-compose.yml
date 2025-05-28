@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   chroma:
     image: chromadb/chroma:latest
@@ -24,5 +23,21 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  embedding:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./llama.cpp:/app/llama.cpp:ro
+      - ./models:/app/models:ro
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   ollama-data:

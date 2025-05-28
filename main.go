@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +27,8 @@ import (
 )
 
 const (
-	defaultChromaURL = "http://localhost:8000"
-	defaultOllamaURL = "http://localhost:11434/api/generate"
+	defaultChromaURL = "http://chroma:8000"
+	defaultOllamaURL = "http://ollama:11434/api/generate"
 	defaultDataPath  = "_data"
 	maxHistorySize   = 1000
 )
@@ -136,18 +134,6 @@ func (c *Client) handleError(err error, context string) error {
 		p.Errors = append(p.Errors, fmt.Sprintf("%s: %v", context, err))
 	})
 	return err
-}
-
-func generateUUIDv4() (string, error) {
-	b := make([]byte, 16)
-	_, err := rand.Read(b)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 func (c *Client) cacheCollectionUUID(collectionName, uuid string) {
@@ -669,84 +655,102 @@ func (c *Client) IngestData(tenantID, dataPath, collectionName string) error {
 }
 
 type EmbeddingServer struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	mu     sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	modelPath string
+	mu        sync.Mutex
 }
 
 func NewEmbeddingServer(modelPath string) (*EmbeddingServer, error) {
-
-	// TODO: FIXA DEN HÄR SKIT PATHEN
-	relPath := "./llama.cpp/build/bin/llama-embedding"
-
-	absPath, err := filepath.Abs(relPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+	relPath := "/app/llama-embedding"
+	if _, err := os.Stat(relPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("llama-embedding binary not found at %s", relPath)
 	}
-	fmt.Println("Using executable absolute path:", absPath)
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("model file not found at %s", modelPath)
+	}
 
-	cmd := exec.Command(absPath,
+	cmd := exec.Command(relPath,
 		"-m", modelPath,
-		"--embedding",
-		"--interactive",
-		"--n_predict", "0",
+		"--embd-output-format", "array", // Output as array of floats
+		"--embd-normalize", "2", // Euclidean normalization
+		"--embd-separator", "\n", // Default separator
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get stdin pipe: %v", err)
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get stdout pipe: %v", err)
 	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stderr pipe: %v", err)
+	}
+
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start llama-embedding: %v", err)
 	}
+
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			fmt.Println("llama-embedding stderr:", scanner.Text())
+		}
+	}()
+
 	return &EmbeddingServer{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdoutPipe),
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    bufio.NewReader(stdoutPipe),
+		modelPath: modelPath,
 	}, nil
 }
 
 func (s *EmbeddingServer) Close() error {
 	return s.cmd.Process.Kill()
 }
-
-func (s *EmbeddingServer) GetEmbedding(prompt string) ([]float64, error) {
+func (s *EmbeddingServer) GetEmbedding(text string) ([]float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.stdin.Write([]byte(prompt + "\n"))
+	if s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
+		fmt.Println("Embedding process exited, restarting...")
+		newServer, err := NewEmbeddingServer(s.cmd.Args[2]) // modelPath
+		if err != nil {
+			return nil, fmt.Errorf("failed to restart embedding server: %v", err)
+		}
+		*s = *newServer
+	}
+
+	// Write input with newline
+	_, err := fmt.Fprintf(s.stdin, "%s\n", text)
 	if err != nil {
-		return nil, err
-	}
-
-	var embeddingLine string
-	for {
-		line, err := s.stdout.ReadString('\n')
-		if err != nil {
-			return nil, err
+		// Try restarting on broken pipe
+		fmt.Println("Write error:", err)
+		newServer, restartErr := NewEmbeddingServer(s.cmd.Args[2])
+		if restartErr != nil {
+			return nil, fmt.Errorf("failed to restart after write error: %v", restartErr)
 		}
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			embeddingLine = line
-			break
+		*s = *newServer
+		_, err = fmt.Fprintf(s.stdin, "%s\n", text)
+		if err != nil {
+			return nil, fmt.Errorf("write failed after restart: %v", err)
 		}
 	}
 
-	vecRaw := embeddingLine[1 : len(embeddingLine)-1]
-	tokens := strings.Split(vecRaw, ",")
-	embedding := make([]float64, 0, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		val, err := strconv.ParseFloat(t, 64)
-		if err != nil {
-			continue
-		}
-		embedding = append(embedding, val)
+	line, err := s.stdout.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("failed to read stdout: %v", err)
 	}
+
+	var embedding []float64
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &embedding); err != nil {
+		return nil, fmt.Errorf("failed to parse embedding: %v, output: %s", err, line)
+	}
+
 	return embedding, nil
 }
 func main() {
@@ -801,14 +805,6 @@ func main() {
 
 	formatter = html.New(html.WithClasses(true))
 
-	modelPath := getEnv("LLAMA_MODEL_PATH", "nomic-embed-text-v1.5.Q4_K_M.gguf")
-	embeddingServer, err := NewEmbeddingServer(modelPath)
-	if err != nil {
-		slog.Error("Failed to start embedding server", "error", err)
-		return
-	}
-	defer embeddingServer.Close()
-
 	router := http.NewServeMux()
 	router.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -821,6 +817,13 @@ func main() {
 	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWebSocket(w, r, chromaClient, tenantID, collectionName)
 	})
+
+	modelPath := getEnv("LLAMA_MODEL_PATH", "/app/models/nomic-embed-text-v1.5.Q4_K_M.gguf")
+	embeddingServer, err := NewEmbeddingServer(modelPath)
+	if err != nil {
+		fmt.Println("Failed to start embedding server:", err)
+		return
+	}
 	router.HandleFunc("/embed", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
